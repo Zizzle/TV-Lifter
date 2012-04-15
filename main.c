@@ -19,29 +19,30 @@
 
 #define IS_MOTOR_RUNNING ((MOTOR_OUT & (MOTOR_UP | MOTOR_DOWN)) != (MOTOR_UP | MOTOR_DOWN))
 
-#define SECONDS(x) (x)
+#define IS_MOTOR_RUNNING_UP   ((MOTOR_OUT & MOTOR_UP) == 0)
+#define IS_MOTOR_RUNNING_DOWN ((MOTOR_OUT & MOTOR_DOWN) == 0)
+
+#define SECONDS(x) (200 * (x))
 
 unsigned duration;
-char ignore_button = 0;
+unsigned ignore_button = 0;
 
-int main(void) {
+// Delay Routine from mspgcc help file
+static void __inline__ delay(register unsigned int n)
+{
+  __asm__ __volatile__ (
+  "1: \n"
+  " dec %[n] \n"
+  " jne 1b \n"
+        : [n] "+r"(n));
+}
 
-  WDTCTL = WDTPW + WDTHOLD;	// Stop WDT
 
-  MOTOR_DIR |= MOTOR_UP + MOTOR_DOWN + LED;  //Set LED pins as outputs
-  MOTOR_OUT  = MOTOR_UP + MOTOR_DOWN;	     //Turn on both LEDs
+#define DELAY_5ms 1650
 
-  P1IES |= SW_TOP | SW_BOTTOM | SW_START;
-  P1IE  |= SW_TOP | SW_BOTTOM | SW_START;
-
-  BCSCTL3 |= LFXT1S_2;	//Set ACLK to use internal VLO (12 kHz clock)
-			
-  eint();	//Enable global interrupts
-
-  while(1) {
-	//Loop forever, interrupts take care of the rest
-	__bis_SR_register(CPUOFF + GIE);  // sleep waiting for a character or timer wakeup
-  }
+char is_hit(unsigned char pin, unsigned char first, unsigned char second)
+{
+	return ((first & pin) == 0) && ((second & pin) == 0);
 }
 
 void start(unsigned char dir)
@@ -50,46 +51,53 @@ void start(unsigned char dir)
 	MOTOR_OUT |= LED;
 	duration = 0;
 	ignore_button = SECONDS(2);
-
-	TACTL = TASSEL_1 | MC_1;	//Set TimerA to use auxiliary clock in UP mode
-	TACCTL0 = CCIE;	//Enable the interrupt for TACCR0 match
-	TACCR0 = 10000;	/*Set TACCR0 which also starts the timer. At */
 }
 
 void stop()
 {
         // don't let start button work for a while
 	ignore_button = SECONDS(5);
-
 	MOTOR_OFF;
 }
 
-interrupt(TIMERA0_VECTOR) TIMERA0_ISR(void)
-{
-	duration++;
+int main(void) {
+	unsigned char first;
+	unsigned char second;
+
+	WDTCTL = WDTPW + WDTHOLD;	// Stop WDT
+ 
+	BCSCTL1 = CALBC1_1MHZ;                    // Set range
+	DCOCTL = CALDCO_1MHZ;
+
+	MOTOR_DIR |= MOTOR_UP + MOTOR_DOWN + LED;  //Set LED pins as outputs
+	MOTOR_OUT  = MOTOR_UP + MOTOR_DOWN;	     //Turn on both LEDs
+
+  while(1) {
+	first = P1IN;
+	delay(DELAY_5ms);
+	second = P1IN;
+	
+	if (IS_MOTOR_RUNNING_UP && is_hit(SW_TOP, first, second))
+	{
+		stop();
+	}
+
+	if (IS_MOTOR_RUNNING_DOWN && is_hit(SW_BOTTOM, first, second))
+	{
+		stop();
+	}
+	
+	if (IS_MOTOR_RUNNING && duration++ > SECONDS(20))
+	{
+		stop();
+	}
 
 	if (ignore_button > 0)
 		ignore_button--;
 
-	if (IS_MOTOR_RUNNING)
+	if (ignore_button == 0)
 	{
-		if (SW_BOTTOM_HIT || SW_TOP_HIT || duration > SECONDS(30))
-		{
-			stop();
-		}
-	}
-	else
-	{
-		if (ignore_button == 0)
-			TACTL = TASSEL_1; // timer off	
-	}
-}
-
-interrupt(PORT1_VECTOR) Port_1(void)
-{ 
-	if (P1IFG & SW_START)
-	{
-		if (ignore_button == 0)
+		if (is_hit(SW_START, first, second))
 		{
 			if (IS_MOTOR_RUNNING)
 				stop();
@@ -98,12 +106,7 @@ interrupt(PORT1_VECTOR) Port_1(void)
 			else
 				start(MOTOR_DOWN);
 		}
-	}
-
-	if (P1IFG & SW_BOTTOM || P1IFG & SW_TOP)
-	{
-		stop();
-	}
-	P1IFG = 0;
+	}	
+  }
 }
 
